@@ -1,0 +1,130 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------
+// 1) Region, Table, TableSession vb.
+// ---------------------
+model Region {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  name   String
+  tables Table[]
+
+  @@unique([name])
+}
+
+model Table {
+  id        String @id @default(auto()) @map("_id") @db.ObjectId
+  tableId   Int
+  regionId  String
+  region    Region @relation(fields: [regionId], references: [id])
+  alias     String?
+
+  // Aynı region'da aynı tableId bir daha eklenemesin
+  @@unique([regionId, tableId])
+}
+
+model TableSession {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+
+  // Bir oturumun sahip olabileceği tüm masa ID’leri
+  tableIds       String[]
+
+  status         String     // "open", "cancelled", "paid", vb.
+  total          Float
+  paymentMethod  String?
+  closedAt       DateTime?
+
+  // Merged mantığı
+  mergedTo       String?
+  mergedAt       DateTime?
+
+  items    TableSessionItem[]
+  payments Payment[]
+}
+
+model TableSessionItem {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  tableSessionId String
+  productId      String?
+  name           String
+  price          Float
+  quantity       Int
+  createdAt      DateTime @default(now())
+
+  // Relation to TableSession
+  tableSession TableSession @relation(fields: [tableSessionId], references: [id])
+
+  // Ürün ilişkisi
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  // Bir session'da aynı ürün ismi bir defa olsun
+  @@unique([tableSessionId, name], map: "tableSessionId_name")
+}
+
+model Product {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  name          String
+  price         Float
+  isFavorite    Boolean  @default(false)
+
+  // Kategori ilişkisi
+  categoryId    String?
+  category      Category? @relation(fields: [categoryId], references: [id])
+
+  // Stok alanları
+  stock         Int    @default(0)
+  critical      Int    @default(0)
+  inStockList   Boolean @default(false)
+
+  // Back-relation to TableSessionItem
+  tableSessionItems TableSessionItem[]
+}
+
+model Category {
+  id       String    @id @default(auto()) @map("_id") @db.ObjectId
+  name     String
+  products Product[]
+
+  @@unique([name])
+}
+
+model Payment {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  tableSessionId String
+  method         String?
+  amount         Float
+  createdAt      DateTime @default(now())
+
+  tableSession TableSession @relation(fields: [tableSessionId], references: [id])
+}
+
+// ---------------------
+// 2) Gider (Expense) + Gider Kategorisi (ExpenseCategory)
+// ---------------------
+model Expense {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  name       String
+  amount     Float
+  createdAt  DateTime @default(now())
+
+  // Giderin hangi kategoriye ait olduğu (opsiyonel)
+  expenseCategoryId String?
+  expenseCategory   ExpenseCategory? @relation(fields: [expenseCategoryId], references: [id])
+}
+
+model ExpenseCategory {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  name    String
+
+  // Bu kategorideki tüm giderleri (opsiyonel)
+  expenses Expense[]
+
+  // Kategori isimleri eşsiz olsun isterseniz:
+  // @@unique([name])
+}
