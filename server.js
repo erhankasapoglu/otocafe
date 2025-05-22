@@ -243,10 +243,12 @@ async function main() {
           });
         }
 
+        // regionId'i de emit ediyoruz
         io.emit("tableUpdated", {
           sessionId: session.id,
           status: "open",
           total: session.total,
+          regionId,
         });
 
         res.json(session);
@@ -255,6 +257,7 @@ async function main() {
         res.status(500).json({ error: error.message });
       }
     });
+
 
     //--------------------------------------------------
     // 8) POST /api/cancel-table
@@ -265,6 +268,8 @@ async function main() {
         if (!sessionId) {
           return res.status(400).json({ error: "sessionId required" });
         }
+
+        // Mevcut session'ı al (items + tableIds)
         const session = await prisma.tableSession.findUnique({
           where: { id: sessionId },
           include: { items: true },
@@ -283,17 +288,27 @@ async function main() {
           }
         }
 
+        // Session'ı "canceled" olarak işaretle
         const updatedSession = await prisma.tableSession.update({
           where: { id: sessionId },
           data: { status: "canceled", closedAt: new Date() },
-          include: { items: true },
         });
 
+        // İlgili tabloların regionId'lerini çek
+        const tablesOfSession = await prisma.table.findMany({
+          where: { id: { in: updatedSession.tableIds } },
+          select: { regionId: true },
+        });
+        const regionIds = [...new Set(tablesOfSession.map((t) => t.regionId))];
+
+        // Her cihazda anlık güncelleme için emit
         io.emit("tableUpdated", {
           sessionId,
           status: "canceled",
           total: updatedSession.total,
+          regionIds,    // güncellenmesi gereken bölge sekmelerini client’a bildiriyoruz
         });
+
         res.json(updatedSession);
       } catch (error) {
         console.error("Error in /api/cancel-table:", error);
@@ -312,8 +327,11 @@ async function main() {
             .status(400)
             .json({ error: "sessionId and paymentMethod are required" });
         }
+
+        // Mevcut session'ı al (tableIds da gerekli olacak)
         const session = await prisma.tableSession.findUnique({
           where: { id: sessionId },
+          include: { items: true },
         });
         if (!session) {
           return res.status(404).json({ error: "Session not found" });
@@ -322,6 +340,7 @@ async function main() {
           return res.status(400).json({ error: "Session is not open" });
         }
 
+        // Oturumu kapat ve ödemeyi kaydet
         const updatedSession = await prisma.tableSession.update({
           where: { id: sessionId },
           data: {
@@ -332,17 +351,28 @@ async function main() {
           include: { items: true },
         });
 
+        // Bu session’a ait tabloların regionId’lerini çek
+        const tablesOfSession = await prisma.table.findMany({
+          where: { id: { in: updatedSession.tableIds } },
+          select: { regionId: true },
+        });
+        const regionIds = [...new Set(tablesOfSession.map((t) => t.regionId))];
+
+        // Tüm istemcilere yay, bölge sekmelerini de güncellesinler
         io.emit("tableUpdated", {
           sessionId: updatedSession.id,
           status: updatedSession.status,
           total: updatedSession.total,
+          regionIds,
         });
+
         res.json(updatedSession);
       } catch (error) {
         console.error("Error in /api/pay-table:", error);
         res.status(500).json({ error: error.message });
       }
     });
+
 
     //--------------------------------------------------
     // 10) POST /api/upsert-order-items
@@ -436,7 +466,7 @@ async function main() {
       }
     });
 
-    //--------------------------------------------------
+   //--------------------------------------------------
     // 11) POST /api/close-table
     //--------------------------------------------------
     expressServer.post("/api/close-table", async (req, res) => {
@@ -445,22 +475,33 @@ async function main() {
         if (!sessionId) {
           return res.status(400).json({ error: "sessionId required" });
         }
+
         const updatedSession = await prisma.tableSession.update({
           where: { id: sessionId },
           data: { status: "closed", closedAt: new Date() },
         });
 
+        // kapatan session’ın tableIds’inden regionId’leri öğren
+        const tablesOfSession = await prisma.table.findMany({
+          where: { id: { in: updatedSession.tableIds } },
+          select: { regionId: true },
+        });
+        const regionIds = [...new Set(tablesOfSession.map(t => t.regionId))];
+
         io.emit("tableUpdated", {
           sessionId,
           status: "closed",
           total: updatedSession.total,
+          regionIds,
         });
+
         return res.status(200).json({ success: true, session: updatedSession });
       } catch (error) {
         console.error("Error in /api/close-table:", error);
         return res.status(500).json({ error: error.message });
       }
     });
+
 
     //--------------------------------------------------
     // 12) GET /api/session-items
@@ -612,9 +653,7 @@ async function main() {
       try {
         const { sessionId, method, amount } = req.body;
         if (!sessionId || amount == null) {
-          return res
-            .status(400)
-            .json({ error: "sessionId ve amount zorunlu" });
+          return res.status(400).json({ error: "sessionId ve amount zorunlu" });
         }
 
         const session = await prisma.tableSession.findUnique({
@@ -647,13 +686,22 @@ async function main() {
             },
             include: { items: true },
           });
-
-          io.emit("tableUpdated", {
-            sessionId,
-            status: "paid",
-            total: updatedSession.total,
-          });
         }
+
+        // hangi region’lara emit edelim?
+        const targetSession = updatedSession ?? session;
+        const tablesOfSession = await prisma.table.findMany({
+          where: { id: { in: targetSession.tableIds } },
+          select: { regionId: true },
+        });
+        const regionIds = [...new Set(tablesOfSession.map(t => t.regionId))];
+
+        io.emit("tableUpdated", {
+          sessionId,
+          status: updatedSession ? "paid" : session.status,
+          total: targetSession.total,
+          regionIds,
+        });
 
         return res.json({
           payment,
@@ -664,6 +712,7 @@ async function main() {
         res.status(500).json({ error: error.message });
       }
     });
+
 
     //--------------------------------------------------
     // 17) POST /api/partial-payment/bulk
