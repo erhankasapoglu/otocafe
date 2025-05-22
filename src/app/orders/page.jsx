@@ -205,6 +205,15 @@ export default function OrdersPage() {
       return copy;
     });
     setMenuOpenIndex(null);
+
+    // İptal sonrası sekme sayısını düş
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === selectedRegion
+          ? { ...r, openCount: Math.max((r.openCount || 1) - 1, 0) }
+          : r
+      )
+    );
   }
 
   // ----------------------------------------------------------------
@@ -236,6 +245,9 @@ export default function OrdersPage() {
     setMenuOpenIndex(null);
   }
 
+  // ----------------------------------------------------------------
+  // 9) ÖDEME ONAY
+  // ----------------------------------------------------------------
   async function handleConfirmPayment() {
     const s = sessions[selectedTableIndex];
     if (!s) return;
@@ -272,10 +284,19 @@ export default function OrdersPage() {
       return copy;
     });
     setShowPaymentModal(false);
+
+    // Ödeme sonrası sekme sayısını düş
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === selectedRegion
+          ? { ...r, openCount: Math.max((r.openCount || 1) - 1, 0) }
+          : r
+      )
+    );
   }
 
   // ----------------------------------------------------------------
-  // 9–11) Masayı değiştir, birleştir, adisyon aktar
+  // 10–11) Masayı değiştir, birleştir, adisyon aktar
   // ----------------------------------------------------------------
   function handleChangeTable() {
     const s = sessions[menuOpenIndex];
@@ -391,6 +412,7 @@ export default function OrdersPage() {
                   : `${sumPaid} / ${total} TL (Kalan: ${remaining})`}
               </div>
               {howMany > 1 && (
+
                 <div className="absolute bottom-2 left-2 text-xs font-bold bg-yellow-200 rounded-full px-2 py-1">
                   {label}
                 </div>
