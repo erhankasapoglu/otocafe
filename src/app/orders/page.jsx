@@ -25,45 +25,63 @@ export default function OrdersPage() {
   const [updates, setUpdates] = useState([]);
 
   // ----------------------------------------------------------------
-  // 1) MASALARI + SESSIONS YÜKLE
+  // 1) MASALARI + SESSIONS YÜKLE ( artık `data` döndürüyor )
   // ----------------------------------------------------------------
   const loadTablesForRegion = useCallback(async (regionId) => {
     try {
-      const res = await fetch(`/api/region-tables-and-sessions?regionId=${regionId}`);
+      const res = await fetch(
+        `/api/region-tables-and-sessions?regionId=${regionId}`
+      );
       if (!res.ok) throw new Error("Masalar yüklenirken hata oluştu.");
       const data = await res.json();
 
       setTables(data.tables);
 
-      // sessions dizisi, tablodaki her index'e karşılık gelecek şekilde
-      // data.sessionMap içindeki verileri eşliyor (boşsa null).
+      // items.length === 0 olan session'ları null kabul et
       const sArr = data.tables.map((t) => {
         let s = data.sessionMap[t.id] || null;
-        if (s && s.items && s.items.length === 0) {
-          // items 0'sa session'ı null kabul ediyoruz
+        if (s && Array.isArray(s.items) && s.items.length === 0) {
           s = null;
         }
         return s;
       });
       setSessions(sArr);
+
+      return data;
     } catch (error) {
       console.error("Masalar yüklenirken hata:", error);
+      return { tables: [], sessionMap: {} };
     }
   }, []);
 
   // ----------------------------------------------------------------
-  // 2) İLK YÜKLEME
+  // 2) İLK YÜKLEME ( bölgeleri al ve openCount hesapla )
   // ----------------------------------------------------------------
   async function loadInitialData() {
     try {
       const res = await fetch("/api/regions");
       if (!res.ok) throw new Error("Bölgeler yüklenirken hata oluştu.");
       const regionsData = await res.json();
-      setRegions(regionsData);
 
-      if (regionsData.length > 0) {
-        setSelectedRegion(regionsData[0].id);
-        await loadTablesForRegion(regionsData[0].id);
+      // Her bölge için openCount hesapla
+      const regionsWithCount = await Promise.all(
+        regionsData.map(async (r) => {
+          const resp = await fetch(
+            `/api/region-tables-and-sessions?regionId=${r.id}`
+          );
+          const { sessionMap } = await resp.json();
+          const openCount = Object.values(sessionMap).filter(
+            (s) => s?.items?.length > 0
+          ).length;
+          return { ...r, openCount };
+        })
+      );
+      setRegions(regionsWithCount);
+
+      // İlk bölgeyi seç ve masaları yükle
+      if (regionsWithCount.length > 0) {
+        setSelectedRegion(regionsWithCount[0].id);
+        await loadTablesForRegion(regionsWithCount[0].id);
       }
     } catch (error) {
       console.error("Initial data hata:", error);
@@ -75,63 +93,64 @@ export default function OrdersPage() {
   }, [loadTablesForRegion]);
 
   // ----------------------------------------------------------------
-  // 3) SOCKET.IO
+  // 3) SOCKET.IO İLE GERÇEK ZAMANLI GÜNCELLEMELER
   // ----------------------------------------------------------------
   useEffect(() => {
     const socket = io();
     socketRef.current = socket;
 
     socket.on("tableUpdated", (data) => {
-      console.log("Gelen güncelleme:", data);
       setUpdates((prev) => [...prev, data]);
 
-      // Eğer status "open" ise, masayı yenilemek için tabloyu tekrar yükle
       if (data.status === "open") {
-        if (selectedRegion) {
-          loadTablesForRegion(selectedRegion);
-        }
+        if (selectedRegion) loadTablesForRegion(selectedRegion);
         return;
       }
 
-      // Aksi halde sessions dizisinde ilgili session'ı güncelle
       setSessions((prev) =>
         prev.map((session) => {
           if (session && session.id === data.sessionId) {
-            // paid, canceled, closed durumlarında session'ı null yap
             if (["paid", "canceled", "closed"].includes(data.status)) {
               return null;
             }
-            // open durumunda session güncelle
-            else if (data.status === "open") {
-              return {
-                ...session,
-                status: "open",
-                total: data.total ?? session.total,
-              };
-            }
+            return {
+              ...session,
+              status: data.status,
+              total: data.total ?? session.total,
+            };
           }
           return session;
         })
       );
     });
 
-    return () => {
-      socket.disconnect();
-    };
+    return () => socket.disconnect();
   }, [selectedRegion, loadTablesForRegion]);
 
   // ----------------------------------------------------------------
-  // 4) BÖLGE SEKME
+  // 4) BÖLGE SEKME TIKLAMA
   // ----------------------------------------------------------------
   async function handleRegionTabClick(regionId) {
     setSelectedRegion(regionId);
-    await loadTablesForRegion(regionId);
+
+    const data = await loadTablesForRegion(regionId);
+
+    // Yeni openCount’u güncelle
+    const openCount = Object.values(data.sessionMap).filter(
+      (s) => s?.items?.length > 0
+    ).length;
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === regionId ? { ...r, openCount } : r
+      )
+    );
+
     setShowPaymentModal(false);
     setMenuOpenIndex(null);
   }
 
   // ----------------------------------------------------------------
-  // 5) MASAYA TIKLAYINCA OPEN
+  // 5) MASAYA TIKLAYINCA OTURUM AÇMA
   // ----------------------------------------------------------------
   async function handleTableClick(i) {
     const t = tables[i];
@@ -159,8 +178,9 @@ export default function OrdersPage() {
       });
       setSelectedTableIndex(i);
 
-      // Masa açıldıktan sonra tables/[id] sayfasına yönlendir
-      router.push(`/tables/${t.id}?regionId=${selectedRegion}&sessionId=${session.id}`);
+      router.push(
+        `/tables/${t.id}?regionId=${selectedRegion}&sessionId=${session.id}`
+      );
     } catch (err) {
       console.error("Masa açma hatası:", err);
     }
@@ -188,7 +208,7 @@ export default function OrdersPage() {
   }
 
   // ----------------------------------------------------------------
-  // 7) MENÜ (3 nokta)
+  // 7) MENÜ AÇ / KAPAT
   // ----------------------------------------------------------------
   function openMenuSheet(e, i) {
     e.stopPropagation();
@@ -199,7 +219,7 @@ export default function OrdersPage() {
   }
 
   // ----------------------------------------------------------------
-  // 8) ÖDEME MODAL
+  // 8) ÖDEME MODALLARI
   // ----------------------------------------------------------------
   function handlePaymentModal(i) {
     setSelectedTableIndex(i);
@@ -220,23 +240,19 @@ export default function OrdersPage() {
     const s = sessions[selectedTableIndex];
     if (!s) return;
 
-    // Full Payment
     if (paymentType === "full") {
       await fetch("/api/pay-table", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: s.id,
-          paymentMethod,
-        }),
+        body: JSON.stringify({ sessionId: s.id, paymentMethod }),
       });
-    }
-    // Partial Payment
-    else {
-      const sumPaid = s.payments ? s.payments.reduce((acc, pay) => acc + pay.amount, 0) : 0;
+    } else {
+      const sumPaid = s.payments
+        ? s.payments.reduce((acc, pay) => acc + pay.amount, 0)
+        : 0;
       const remaining = s.total - sumPaid;
       if (remaining <= 0) {
-        alert("Bu masada ödenecek bir tutar kalmadı.");
+        alert("Bu masada ödenecek bakiye kalmadı.");
         return;
       }
       await fetch("/api/partial-payment", {
@@ -250,7 +266,6 @@ export default function OrdersPage() {
       });
     }
 
-    // Ödeme sonrası session null
     setSessions((prev) => {
       const copy = [...prev];
       copy[selectedTableIndex] = null;
@@ -260,7 +275,7 @@ export default function OrdersPage() {
   }
 
   // ----------------------------------------------------------------
-  // 9) MASAYI DEĞİŞTİR (Yeni Sayfaya Yönlendirme)
+  // 9–11) Masayı değiştir, birleştir, adisyon aktar
   // ----------------------------------------------------------------
   function handleChangeTable() {
     const s = sessions[menuOpenIndex];
@@ -268,20 +283,12 @@ export default function OrdersPage() {
     router.push(`/changetable?sessionId=${s.id}`);
     closeMenuSheet();
   }
-
-  // ----------------------------------------------------------------
-  // 10) MASALARI BİRLEŞTİR (Yeni Sayfaya Yönlendirme)
-  // ----------------------------------------------------------------
   function handleMergeTable() {
     const s = sessions[menuOpenIndex];
     if (!s) return;
     router.push(`/mergetable?sessionId=${s.id}`);
     closeMenuSheet();
   }
-
-  // ----------------------------------------------------------------
-  // 11) ADİSYON AKTAR (Yeni sayfaya yönlendirme, sourceSessionId query parametresi ile)
-  // ----------------------------------------------------------------
   function handleTransferAdisyon() {
     const s = sessions[menuOpenIndex];
     if (!s) return;
@@ -290,35 +297,22 @@ export default function OrdersPage() {
   }
 
   // ----------------------------------------------------------------
-  // [EKLENDİ: label mantığı + sadece multiple masalar için gösterim]
-  // 1) sessionLabelMap: her session.id için bir label ver
-  // 2) ama sadece bir session.id birden fazla kez geçiyorsa (birleştirilmiş) ekranda göster
+  // 12) Label & birleştirme için hesaplama
   // ----------------------------------------------------------------
   let sessionLabelMap = {};
   let labelCounter = 1;
-
-  // (A) sessionId -> kaç defa tekrar ediyor?
   const occurrenceMap = {};
-  for (let i = 0; i < sessions.length; i++) {
-    const s = sessions[i];
-    if (!s) continue;
-    if (!occurrenceMap[s.id]) occurrenceMap[s.id] = 0;
-    occurrenceMap[s.id]++;
-  }
-
-  // (B) Olası sessionId’lere label atayalım
-  for (let i = 0; i < sessions.length; i++) {
-    const s = sessions[i];
-    if (s) {
-      if (!sessionLabelMap[s.id]) {
-        sessionLabelMap[s.id] = labelCounter;
-        labelCounter++;
-      }
+  sessions.forEach((s) => {
+    if (s) occurrenceMap[s.id] = (occurrenceMap[s.id] || 0) + 1;
+  });
+  sessions.forEach((s) => {
+    if (s && !sessionLabelMap[s.id]) {
+      sessionLabelMap[s.id] = labelCounter++;
     }
-  }
+  });
 
   // ----------------------------------------------------------------
-  // 12) RENDER
+  // 13) RENDER
   // ----------------------------------------------------------------
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
@@ -337,6 +331,7 @@ export default function OrdersPage() {
               }`}
             >
               {r.name}
+              {r.openCount > 0 && ` (${r.openCount})`}
             </button>
           );
         })}
@@ -352,12 +347,10 @@ export default function OrdersPage() {
               <div
                 key={table.id}
                 onClick={() => handleTableClick(i)}
-                className="relative rounded-md border border-gray-300 bg-white
-                           cursor-pointer text-center aspect-[2/1]
-                           flex flex-col items-center justify-center"
+                className="relative rounded-md border border-gray-300 bg-white cursor-pointer text-center aspect-[2/1] flex flex-col items-center justify-center"
               >
                 <div className="font-bold text-gray-700">
-                  {table.alias ? table.alias : `Masa ${table.tableId}`}
+                  {table.alias || `Masa ${table.tableId}`}
                 </div>
               </div>
             );
@@ -371,63 +364,37 @@ export default function OrdersPage() {
           const remaining = Math.max(total - sumPaid, 0);
 
           let containerClass = `
-            relative
-            rounded-md
-            border border-gray-300
-            bg-white
-            cursor-pointer
-            text-center
-            aspect-[2/1]
-            flex
-            flex-col
-            items-center
-            justify-center
+            relative rounded-md border border-gray-300 bg-white cursor-pointer text-center aspect-[2/1]
+            flex flex-col items-center justify-center
           `;
-          if (session.status === "open") {
-            containerClass += " border-red-500 border-2";
-          } else if (session.status === "paid") {
-            containerClass += " bg-blue-100";
-          } else if (session.status === "canceled") {
-            containerClass += " bg-gray-200";
-          }
+          if (session.status === "open") containerClass += " border-red-500 border-2";
+          else if (session.status === "paid") containerClass += " bg-blue-100";
+          else if (session.status === "canceled") containerClass += " bg-gray-200";
 
-          // Label bul
           const label = sessionLabelMap[session.id] || null;
-          // Kaç masa var bu session'da?
           const howMany = occurrenceMap[session.id] || 1;
 
           return (
             <div
               key={table.id}
-              onClick={() => {
-                if (session.status === "open") {
-                  handleTableClick(i);
-                }
-              }}
+              onClick={() =>
+                session.status === "open" && handleTableClick(i)
+              }
               className={containerClass}
             >
               <div className="font-bold text-gray-700">
-                {table.alias ? table.alias : `Masa ${table.tableId}`}
+                {table.alias || `Masa ${table.tableId}`}
               </div>
               <div className="text-sm text-gray-600 mt-0">
                 {sumPaid === 0
                   ? `${total} TL`
                   : `${sumPaid} / ${total} TL (Kalan: ${remaining})`}
               </div>
-
-              {/* Sadece howMany > 1 ise (yani bu session en az 2 masa içeriyorsa) label göster */}
               {howMany > 1 && (
-                <div
-                  className="absolute bottom-2 left-2
-                             text-xs font-bold
-                             bg-yellow-200
-                             rounded-full
-                             px-2 py-1"
-                >
+                <div className="absolute bottom-2 left-2 text-xs font-bold bg-yellow-200 rounded-full px-2 py-1">
                   {label}
                 </div>
               )}
-
               {session.status === "open" && (
                 <button
                   onClick={(e) => {
@@ -447,28 +414,23 @@ export default function OrdersPage() {
       {/* BOTTOM SHEET MENÜ */}
       {menuOpenIndex !== null && (
         <div
-          className="fixed inset-0 z-50 flex flex-col justify-end bg-black/50
-                     transition-all duration-500"
+          className="fixed inset-0 z-50 flex flex-col justify-end bg-black/50 transition-all duration-500"
           onClick={closeMenuSheet}
         >
           <div
-            className="bg-white rounded-t-xl p-4 transform transition-transform
-                       duration-500 translate-y-0"
+            className="bg-white rounded-t-xl p-4 transform transition-transform duration-500 translate-y-0"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex flex-col gap-2">
               {(() => {
                 const s = sessions[menuOpenIndex];
                 if (!s) return null;
-
                 const sumPaid = s.payments
-                  ? s.payments.reduce((acc, pay) => acc + pay.amount, 0)
+                  ? s.payments.reduce((a, p) => a + p.amount, 0)
                   : 0;
                 const remaining = Math.max(s.total - sumPaid, 0);
-
                 return (
                   <>
-                    {/* Quick Pay */}
                     <button
                       onClick={() => handlePartialPaymentModal(menuOpenIndex)}
                       className="text-left px-2 py-2 hover:bg-gray-100 rounded flex items-center gap-2"
@@ -480,8 +442,6 @@ export default function OrdersPage() {
                       />
                       {`Hızlı Öde (${remaining} ₺)`}
                     </button>
-
-                    {/* Cancel Table */}
                     <button
                       onClick={() => handleCancelTable(menuOpenIndex)}
                       className="text-left px-2 py-2 hover:bg-gray-100 rounded flex items-center gap-2"
@@ -496,8 +456,6 @@ export default function OrdersPage() {
                   </>
                 );
               })()}
-
-              {/* Change Table */}
               <button
                 onClick={handleChangeTable}
                 className="text-left px-2 py-2 hover:bg-gray-100 rounded flex items-center gap-2"
@@ -509,8 +467,6 @@ export default function OrdersPage() {
                 />
                 Masayı Değiştir
               </button>
-
-              {/* Merge Table */}
               <button
                 onClick={handleMergeTable}
                 className="text-left px-2 py-2 hover:bg-gray-100 rounded flex items-center gap-2"
@@ -522,8 +478,6 @@ export default function OrdersPage() {
                 />
                 Masaları Birleştir
               </button>
-
-              {/* Transfer Check (Adisyon Aktar) */}
               <button
                 onClick={handleTransferAdisyon}
                 className="text-left px-2 py-2 hover:bg-gray-100 rounded flex items-center gap-2"
@@ -535,8 +489,6 @@ export default function OrdersPage() {
                 />
                 Adisyon Aktar
               </button>
-
-              {/* Dismiss (Vazgeç) */}
               <button
                 onClick={closeMenuSheet}
                 className="text-left px-2 py-2 hover:bg-gray-100 rounded flex items-center gap-2"
@@ -560,47 +512,38 @@ export default function OrdersPage() {
             <h2 className="text-xl font-bold mb-4 text-center">
               Masa {tables[selectedTableIndex].tableId} Ödeme
             </h2>
-
-            {/* İKONLU BUTONLAR */}
             <div className="flex gap-4 justify-center mb-6">
-              {/* Nakit Butonu (cash) */}
               <button
                 onClick={() => setPaymentMethod("cash")}
-                className={`w-24 h-24 flex flex-col items-center justify-center rounded border-2 transition-colors font-bold
-                  ${
-                    paymentMethod === "cash"
-                      ? "bg-[#ffc9c9] border-black text-black"
-                      : "bg-white border-gray-300 text-black"
-                  }`}
+                className={`w-24 h-24 flex flex-col items-center justify-center rounded border-2 transition-colors font-bold ${
+                  paymentMethod === "cash"
+                    ? "bg-[#ffc9c9] border-black text-black"
+                    : "bg-white border-gray-300 text-black"
+                }`}
               >
                 <img
                   src="/icons/cash.png"
                   alt="Cash"
                   className="w-16 h-16 mb-1"
                 />
-                <span className="font-bold">Nakit</span>
+                Nakit
               </button>
-
-              {/* Kart Butonu (card) */}
               <button
                 onClick={() => setPaymentMethod("card")}
-                className={`w-24 h-24 flex flex-col items-center justify-center rounded border-2 transition-colors font-bold
-                  ${
-                    paymentMethod === "card"
-                      ? "bg-[#ffc9c9] border-black text-black"
-                      : "bg-white border-gray-300 text-black"
-                  }`}
+                className={`w-24 h-24 flex flex-col items-center justify-center rounded border-2 transition-colors font-bold ${
+                  paymentMethod === "card"
+                    ? "bg-[#ffc9c9] border-black text-black"
+                    : "bg-white border-gray-300 text-black"
+                }`}
               >
                 <img
                   src="/icons/card.png"
                   alt="Card"
                   className="w-16 h-16 mb-1"
                 />
-                <span className="font-bold">Kart</span>
+                Kart
               </button>
             </div>
-
-            {/* Onay / İptal Butonları */}
             <div className="flex gap-4 justify-center">
               <button
                 onClick={() => setShowPaymentModal(false)}
