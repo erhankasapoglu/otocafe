@@ -534,58 +534,76 @@ async function main() {
     //--------------------------------------------------
     expressServer.get("/api/payment-stats", async (req, res) => {
       try {
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date();
-        endOfDay.setHours(23, 59, 59, 999);
+        // 1) GÜN BAŞI / SONU
+        const startOfDay = new Date(); startOfDay.setHours(0,0,0,0);
+        const endOfDay   = new Date(); endOfDay.setHours(23,59,59,999);
 
+        // 2) Bugünün ödemeleri
         const payments = await prisma.payment.findMany({
-          where: {
-            createdAt: {
-              gte: startOfDay,
-              lte: endOfDay,
-            },
-          },
+          where: { createdAt: { gte: startOfDay, lte: endOfDay } }
         });
+        const todayTotal = payments.reduce((acc,p)=>acc+p.amount, 0);
 
-        const todayTotal = payments.reduce((acc, p) => acc + p.amount, 0);
-
+        // 3) Ödeme yöntemlerine göre toplamlar
         const methodTotals = {};
-        payments.forEach((p) => {
+        payments.forEach(p => {
           const m = p.method || "Diğer";
-          if (!methodTotals[m]) methodTotals[m] = 0;
-          methodTotals[m] += p.amount;
+          methodTotals[m] = (methodTotals[m] || 0) + p.amount;
         });
 
-        // Saatlik dağılım
-        const hourlyTotals = {};
-        for (let i = 0; i < 24; i++) {
-          hourlyTotals[i] = 0;
-        }
-        payments.forEach((p) => {
-          const hour = new Date(p.createdAt).getHours();
-          hourlyTotals[hour] += p.amount;
+        // 4) Saatlik dağılım
+        const hourlyTotals = Array.from({length:24},()=>0);
+        payments.forEach(p => {
+          const h = new Date(p.createdAt).getHours();
+          hourlyTotals[h] += p.amount;
         });
-        const dailyData = Object.keys(hourlyTotals).map((hour) => ({
-          hour: `${hour}:00`,
-          amount: hourlyTotals[hour],
+        const dailyData = hourlyTotals.map((amt,h)=>({
+          hour:`${h}:00`, amount:amt
         }));
 
-        const openOrdersTotal = 0;
-        const guestCount = 0;
+        // 5) Açık oturumları al (status=open ve sadece payments include)
+        const openSessions = await prisma.tableSession.findMany({
+          where: { status: "open" },
+          include: { payments: true }
+        });
 
-        res.json({
+        // 6) Tüm tableIds’i topla, bir kerede tabloları region ile çek
+        const allTableIds = [...new Set(openSessions.flatMap(s=>s.tableIds))];
+        const tables = await prisma.table.findMany({
+          where: { id: { in: allTableIds } },
+          include: { region: true }
+        });
+        const tableMap = tables.reduce((m,t)=>{ m[t.id]=t; return m; }, {});
+
+        // 7) Açık sipariş toplamı (Tanıdık hariç, kısmi ödemeleri düş)
+        const openOrdersTotal = openSessions
+          .filter(s => tableMap[s.tableIds[0]].region.name !== "Tanıdık")
+          .reduce((sum, s) => {
+            const paid = s.payments.reduce((a,p)=>a+p.amount, 0);
+            return sum + Math.max(s.total - paid, 0);
+          }, 0);
+
+        // 8) Bugün kapanan oturum sayısı = misafir count
+        const guestCount = await prisma.tableSession.count({
+          where: {
+            status: { in: ["paid","closed"] },
+            closedAt: { gte: startOfDay, lte: endOfDay }
+          }
+        });
+
+        return res.json({
           todayTotal,
           openOrdersTotal,
           guestCount,
           methodTotals,
           dailyData,
         });
-      } catch (error) {
-        console.error("Error in /api/payment-stats:", error);
-        res.status(500).json({ error: error.message });
+      } catch (err) {
+        console.error("Error in /api/payment-stats:", err);
+        return res.status(500).json({ error: err.message });
       }
     });
+
 
     //--------------------------------------------------
     // 16) POST /api/partial-payment
