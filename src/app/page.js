@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect } from "react";
+import { io } from "socket.io-client";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -45,13 +46,26 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadStats();
+
+    // Socket.IO ile gerçek zamanlı güncelleme
+    const socket = io();
+    socket.on("tableUpdated", ({ status }) => {
+      // Açık sipariş toplamı veya misafir sayısını etkileyen durumlar
+      if (["open", "paid", "closed", "canceled"].includes(status)) {
+        loadStats();
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   async function loadStats() {
     try {
       const data = await fetchPaymentStats();
 
-      // Sadece "Nakit" + "Kredi Kartı" toplanacak
+      // Yalnızca "Nakit" + "Kredi Kartı" topla
       let nakitToplam = 0;
       let kartToplam = 0;
       for (const key in data.methodTotals) {
@@ -74,7 +88,7 @@ export default function DashboardPage() {
     }
   }
 
-  // Line Chart verisi (saatlik)
+  // Line Chart (saatlik)
   const lineData = {
     labels: stats.dailyData.map((d) => d.hour),
     datasets: [
@@ -87,7 +101,7 @@ export default function DashboardPage() {
     ],
   };
 
-  // Bar Chart verisi (Nakit vs Kredi Kartı)
+  // Bar Chart (Nakit vs Kart)
   const barData = {
     labels: ["Nakit", "Kredi Kartı"],
     datasets: [
@@ -104,15 +118,13 @@ export default function DashboardPage() {
     ],
   };
 
-  // Doughnut Chart verisi (Nakit vs Kredi Kartı)
-  const methodLabels = Object.keys(stats.methodTotals);
-  const methodValues = Object.values(stats.methodTotals);
+  // Doughnut Chart (Nakit vs Kart)
   const doughnutData = {
-    labels: methodLabels,
+    labels: Object.keys(stats.methodTotals),
     datasets: [
       {
         label: "Ödeme Tipleri",
-        data: methodValues,
+        data: Object.values(stats.methodTotals),
         backgroundColor: ["#ff92a9", "#72bef0"],
         hoverOffset: 4,
       },
@@ -121,54 +133,45 @@ export default function DashboardPage() {
 
   return (
     <div className="bg-gray-100 min-h-screen p-4">
-      {/* Kartlar */}
+      {/* KPI Kartları */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-4">
-        {/* Kart 1: Bugün Alınan Ödemeler */}
+        {/* Bugün Alınan Ödemeler */}
         <div className="rounded shadow overflow-hidden h-16 flex">
-          <div
-            className="w-16 h-16 flex items-center justify-center"
-            style={{ backgroundColor: "#FF5151" }}
-          >
-            <img
-              src="/icons/red.png"
-              alt="Red Icon"
-              className="h-full w-full object-contain"
-            />
+          <div className="w-16 h-16 flex items-center justify-center bg-[#FF5151]">
+            <img src="/icons/red.png" alt="Red Icon" className="h-full w-full" />
           </div>
           <div className="flex-1 bg-white flex flex-col justify-center pr-4 text-right pl-2">
-            <div className="text-lg font-bold">₺{stats.todayTotal.toFixed(2)}</div>
+            <div className="text-lg font-bold">
+              ₺{stats.todayTotal.toFixed(2)}
+            </div>
             <div className="text-sm text-gray-700">Bugün alınan ödemeler</div>
           </div>
         </div>
 
-        {/* Kart 2: Açık Sipariş Toplamı */}
+        {/* Açık Sipariş Toplamı */}
         <div className="rounded shadow overflow-hidden h-16 flex">
-          <div
-            className="w-16 h-16 flex items-center justify-center"
-            style={{ backgroundColor: "#283593" }}
-          >
+          <div className="w-16 h-16 flex items-center justify-center bg-[#283593]">
             <img
               src="/icons/blue.png"
               alt="Blue Icon"
-              className="h-full w-full object-contain"
+              className="h-full w-full"
             />
           </div>
           <div className="flex-1 bg-white flex flex-col justify-center pr-4 text-right pl-2">
-            <div className="text-lg font-bold">₺{stats.openOrdersTotal.toFixed(2)}</div>
+            <div className="text-lg font-bold">
+              ₺{stats.openOrdersTotal.toFixed(2)}
+            </div>
             <div className="text-sm text-gray-700">Açık sipariş toplamı</div>
           </div>
         </div>
 
-        {/* Kart 3: Bugün Misafir Sayısı */}
+        {/* Bugün Misafir Sayısı */}
         <div className="rounded shadow overflow-hidden h-16 flex">
-          <div
-            className="w-16 h-16 flex items-center justify-center"
-            style={{ backgroundColor: "#00695D" }}
-          >
+          <div className="w-16 h-16 flex items-center justify-center bg-[#00695D]">
             <img
               src="/icons/green.png"
               alt="Green Icon"
-              className="h-full w-full object-contain"
+              className="h-full w-full"
             />
           </div>
           <div className="flex-1 bg-white flex flex-col justify-center pr-4 text-right pl-2">
@@ -182,10 +185,7 @@ export default function DashboardPage() {
       <div className="bg-white rounded shadow p-4 mb-4 h-64 flex items-center justify-center">
         <Line
           data={lineData}
-          options={{
-            responsive: true,
-            plugins: { legend: { position: "top" } },
-          }}
+          options={{ responsive: true, plugins: { legend: { position: "top" } } }}
         />
       </div>
 
@@ -203,10 +203,7 @@ export default function DashboardPage() {
       <div className="bg-white rounded shadow p-4 h-64 flex items-center justify-center">
         <Doughnut
           data={doughnutData}
-          options={{
-            responsive: true,
-            plugins: { legend: { position: "bottom" } },
-          }}
+          options={{ responsive: true, plugins: { legend: { position: "bottom" } } }}
         />
       </div>
     </div>
